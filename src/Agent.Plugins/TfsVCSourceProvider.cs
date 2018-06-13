@@ -139,8 +139,8 @@ namespace Agent.Plugins.Repository
             executionContext.SetVariable("build.repository.tfvc.workspace", workspaceName);
 
             // Get the definition mappings.
-            DefinitionWorkspaceMapping[] definitionMappings =
-                JsonConvert.DeserializeObject<DefinitionWorkspaceMappings>(repository.Properties.Get<string>(EndpointData.TfvcWorkspaceMapping))?.Mappings;
+            var workspaceMappings = repository.Properties.Get<IList<Pipelines.WorkspaceMapping>>(Pipelines.RepositoryPropertyNames.Mappings);
+            DefinitionWorkspaceMapping[] definitionMappings = workspaceMappings.Select(x => new DefinitionWorkspaceMapping() { ServerPath = x.ServerPath, LocalPath = x.LocalPath, MappingType = x.Exclude ? DefinitionMappingType.Cloak : DefinitionMappingType.Map }).ToArray();
 
             // Determine the sources directory.
             string sourcesDirectory = repository.Properties.Get<string>("sourcedirectory");
@@ -149,7 +149,7 @@ namespace Agent.Plugins.Repository
             // Attempt to re-use an existing workspace if the command manager supports scorch
             // or if clean is not specified.
             ITfsVCWorkspace existingTFWorkspace = null;
-            bool clean = StringUtil.ConvertToBoolean(repository.Properties.Get<string>(EndpointData.Clean));
+            bool clean = StringUtil.ConvertToBoolean(executionContext.GetInput(Pipelines.PipelineConstants.CheckoutTaskInputs.Clean));
             if (tf.Features.HasFlag(TfsVCFeatures.Scorch) || !clean)
             {
                 existingTFWorkspace = WorkspaceUtil.MatchExactWorkspace(
@@ -305,12 +305,12 @@ namespace Agent.Plugins.Repository
             }
 
             // Steps for shelveset/gated.
-            string shelvesetName = repository.Properties.Get<string>("SourceTfvcShelveset");
+            string shelvesetName = repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Shelveset);
             if (!string.IsNullOrEmpty(shelvesetName))
             {
                 // Steps for gated.
                 ITfsVCShelveset tfShelveset = null;
-                string gatedShelvesetName = repository.Properties.Get<string>("GatedShelvesetName");
+                string gatedShelvesetName = executionContext.Variables.GetValueOrDefault("build.gated.shelvesetname", null)?.Value;
                 if (!string.IsNullOrEmpty(gatedShelvesetName))
                 {
                     // Clean the last-saved-checkin-metadata for existing workspaces.
@@ -383,7 +383,7 @@ namespace Agent.Plugins.Repository
                 {
                     // Create the comment file for reshelve.
                     StringBuilder comment = new StringBuilder(tfShelveset.Comment ?? string.Empty);
-                    string runCi = repository.Properties.Get<string>("GatedRunCI");
+                    string runCi = executionContext.Variables.GetValueOrDefault("build.gated.runci", null)?.Value;
                     bool gatedRunCi = StringUtil.ConvertToBoolean(runCi, true);
                     if (!gatedRunCi)
                     {
@@ -427,7 +427,7 @@ namespace Agent.Plugins.Repository
         {
             if (_undoShelvesetPendingChanges)
             {
-                string shelvesetName = repository.Properties.Get<string>("SourceTfvcShelveset");
+                string shelvesetName = executionContext.Variables.GetValueOrDefault("build.gated.shelvesetname", null)?.Value;
                 executionContext.Debug($"Undo pending changes left by shelveset '{shelvesetName}'.");
 
                 // Create the tf command manager.
@@ -449,8 +449,8 @@ namespace Agent.Plugins.Repository
                 }
 
                 // Get the definition mappings.
-                DefinitionWorkspaceMapping[] definitionMappings =
-                    JsonConvert.DeserializeObject<DefinitionWorkspaceMappings>(repository.Properties.Get<string>(EndpointData.TfvcWorkspaceMapping))?.Mappings;
+                var workspaceMappings = repository.Properties.Get<IList<Pipelines.WorkspaceMapping>>(Pipelines.RepositoryPropertyNames.Mappings);
+                DefinitionWorkspaceMapping[] definitionMappings = workspaceMappings.Select(x => new DefinitionWorkspaceMapping() { ServerPath = x.ServerPath, LocalPath = x.LocalPath, MappingType = x.Exclude ? DefinitionMappingType.Cloak : DefinitionMappingType.Map }).ToArray();
 
                 // Determine the sources directory.
                 string sourcesDirectory = repository.Properties.Get<string>("sourcedirectory");
@@ -704,11 +704,6 @@ namespace Agent.Plugins.Repository
                 executionContext.Debug("Matching workspace not found.");
                 return null;
             }
-        }
-
-        public sealed class DefinitionWorkspaceMappings
-        {
-            public DefinitionWorkspaceMapping[] Mappings { get; set; }
         }
 
         public sealed class DefinitionWorkspaceMapping

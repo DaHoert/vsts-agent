@@ -1,4 +1,5 @@
 using Microsoft.TeamFoundation.Build.WebApi;
+using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
@@ -14,25 +15,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         public override Type ExtensionType => typeof(IJobExtension);
         public override HostTypes HostType => HostTypes.Build;
 
-        private ServiceEndpoint SourceEndpoint { set; get; }
+        private Pipelines.RepositoryResource Repository { set; get; }
         private ISourceProvider SourceProvider { set; get; }
 
         public override IStep GetExtensionPreJobStep(IExecutionContext jobContext)
         {
-            return new JobExtensionRunner(
-                runAsync: GetSourceAsync,
-                condition: ExpressionManager.Succeeded,
-                displayName: StringUtil.Loc("GetSources"),
-                data: null);
+            return null;
         }
 
         public override IStep GetExtensionPostJobStep(IExecutionContext jobContext)
         {
-            return new JobExtensionRunner(
-                runAsync: PostJobCleanupAsync,
-                condition: ExpressionManager.Always,
-                displayName: StringUtil.Loc("Cleanup"),
-                data: null);
+            return null;
         }
 
         // 1. use source provide to solve path, if solved result is rooted, return full path.
@@ -41,9 +34,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         {
             string rootedPath = null;
 
-            if (SourceProvider != null && SourceEndpoint != null)
+            if (SourceProvider != null && Repository != null)
             {
-                path = SourceProvider.GetLocalPath(context, SourceEndpoint, path) ?? string.Empty;
+                path = SourceProvider.GetLocalPath(context, Repository, path) ?? string.Empty;
                 Trace.Info($"Build JobExtension resolving path use source provide: {path}");
 
                 if (!string.IsNullOrEmpty(path) &&
@@ -101,18 +94,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
             if (!string.IsNullOrEmpty(localPath) &&
                 File.Exists(localPath) &&
-                SourceEndpoint != null &&
+                Repository != null &&
                 SourceProvider != null)
             {
                 // If we found a repo, calculate the relative path to the file
-                repoName = SourceEndpoint.Name;
+                repoName = Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name);
                 sourcePath = IOUtil.MakeRelative(localPath, context.Variables.Get(Constants.Variables.Build.SourcesDirectory));
             }
         }
 
         // Prepare build directory
         // Set all build related variables
-        public override void InitializeJobExtension(IExecutionContext executionContext)
+        public override void InitializeJobExtension(IExecutionContext executionContext, IList<Pipelines.JobStep> steps, Pipelines.WorkspaceOptions workspace)
         {
             // Validate args.
             Trace.Entering();
@@ -127,43 +120,44 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 return;
             }
 
-            // Get the repo endpoint and source provider.
+            // We only support checkout one repository at this time.
             if (!TrySetPrimaryEndpointAndProviderInfo(executionContext))
             {
                 throw new Exception(StringUtil.Loc("SupportedRepositoryEndpointNotFound"));
             }
 
-            executionContext.Debug($"Primary repository: {SourceEndpoint.Name}. repository type: {SourceProvider.RepositoryType}");
+            executionContext.Debug($"Primary repository: {Repository.Alias}. repository type: {Repository.Type}");
 
             // Set the repo variables.
-            string repositoryId;
-            if (SourceEndpoint.Data.TryGetValue("repositoryId", out repositoryId)) // TODO: Move to const after source artifacts PR is merged.
+            if (!string.IsNullOrEmpty(Repository.Id)) // TODO: Move to const after source artifacts PR is merged.
             {
-                executionContext.Variables.Set(Constants.Variables.Build.RepoId, repositoryId);
+                executionContext.Variables.Set(Constants.Variables.Build.RepoId, Repository.Id);
             }
 
-            executionContext.Variables.Set(Constants.Variables.Build.RepoName, SourceEndpoint.Name);
-            executionContext.Variables.Set(Constants.Variables.Build.RepoProvider, SourceEndpoint.Type);
-            executionContext.Variables.Set(Constants.Variables.Build.RepoUri, SourceEndpoint.Url?.AbsoluteUri);
+            executionContext.Variables.Set(Constants.Variables.Build.RepoName, Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name));
+            executionContext.Variables.Set(Constants.Variables.Build.RepoProvider, Repository.Type);
+            executionContext.Variables.Set(Constants.Variables.Build.RepoUri, Repository.Url?.AbsoluteUri);
 
-            string checkoutSubmoduleText;
-            if (SourceEndpoint.Data.TryGetValue(EndpointData.CheckoutSubmodules, out checkoutSubmoduleText))
+            var checkoutTask = steps.SingleOrDefault(x => x is Pipelines.TaskStep taskStep && taskStep.Reference.Id == Pipelines.PipelineConstants.CheckoutTask.Id && taskStep.Reference.Version == Pipelines.PipelineConstants.CheckoutTask.Version) as Pipelines.TaskStep;
+            if (checkoutTask != null)
             {
-                executionContext.Variables.Set(Constants.Variables.Build.RepoGitSubmoduleCheckout, checkoutSubmoduleText);
-            }
-
-            // overwrite primary repository's clean value if build.repository.clean is sent from server. this is used by tfvc gated check-in
-            bool? repoClean = executionContext.Variables.GetBoolean(Constants.Variables.Build.RepoClean);
-            if (repoClean != null)
-            {
-                SourceEndpoint.Data[EndpointData.Clean] = repoClean.Value.ToString();
-            }
-            else
-            {
-                string cleanRepoText;
-                if (SourceEndpoint.Data.TryGetValue(EndpointData.Clean, out cleanRepoText))
+                if (checkoutTask.Inputs.ContainsKey(Pipelines.PipelineConstants.CheckoutTaskInputs.Submodules))
                 {
-                    executionContext.Variables.Set(Constants.Variables.Build.RepoClean, cleanRepoText);
+                    executionContext.Variables.Set(Constants.Variables.Build.RepoGitSubmoduleCheckout, checkoutTask.Inputs[Pipelines.PipelineConstants.CheckoutTaskInputs.Submodules]);
+                }
+
+                // overwrite primary repository's clean value if build.repository.clean is sent from server. this is used by tfvc gated check-in
+                bool? repoClean = executionContext.Variables.GetBoolean(Constants.Variables.Build.RepoClean);
+                if (repoClean != null)
+                {
+                    checkoutTask.Inputs[Pipelines.PipelineConstants.CheckoutTaskInputs.Clean] = repoClean.Value.ToString();
+                }
+                else
+                {
+                    if (checkoutTask.Inputs.ContainsKey(Pipelines.PipelineConstants.CheckoutTaskInputs.Clean))
+                    {
+                        executionContext.Variables.Set(Constants.Variables.Build.RepoClean, checkoutTask.Inputs[Pipelines.PipelineConstants.CheckoutTaskInputs.Clean]);
+                    }
                 }
             }
 
@@ -172,8 +166,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             var directoryManager = HostContext.GetService<IBuildDirectoryManager>();
             TrackingConfig trackingConfig = directoryManager.PrepareDirectory(
                 executionContext,
-                SourceEndpoint,
-                SourceProvider);
+                Repository,
+                workspace);
 
             // Set the directory variables.
             executionContext.Output(StringUtil.Loc("SetBuildVars"));
@@ -188,97 +182,98 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             executionContext.Variables.Set(Constants.Variables.Build.ArtifactStagingDirectory, Path.Combine(_workDirectory, trackingConfig.ArtifactsDirectory));
             executionContext.Variables.Set(Constants.Variables.Build.RepoLocalPath, Path.Combine(_workDirectory, trackingConfig.SourcesDirectory));
 
-            SourceProvider.SetVariablesInEndpoint(executionContext, SourceEndpoint);
+            Repository.Properties.Set<string>("sourcedirectory", Path.Combine(_workDirectory, trackingConfig.SourcesDirectory));
+            //SourceProvider.SetVariablesInEndpoint(executionContext, SourceEndpoint);
         }
 
-        private async Task GetSourceAsync(IExecutionContext executionContext, object data)
-        {
-            // Validate args.
-            Trace.Entering();
+        // private async Task GetSourceAsync(IExecutionContext executionContext, object data)
+        // {
+        //     // Validate args.
+        //     Trace.Entering();
 
-            // This flag can be false for jobs like cleanup artifacts.
-            // If syncSources = false, we will not set source related build variable, not create build folder, not sync source.
-            bool syncSources = executionContext.Variables.Build_SyncSources ?? true;
-            if (!syncSources)
-            {
-                Trace.Info($"{Constants.Variables.Build.SyncSources} = false, we will not set source related build variable, not create build folder and not sync source");
-                return;
-            }
+        //     // This flag can be false for jobs like cleanup artifacts.
+        //     // If syncSources = false, we will not set source related build variable, not create build folder, not sync source.
+        //     bool syncSources = executionContext.Variables.Build_SyncSources ?? true;
+        //     if (!syncSources)
+        //     {
+        //         Trace.Info($"{Constants.Variables.Build.SyncSources} = false, we will not set source related build variable, not create build folder and not sync source");
+        //         return;
+        //     }
 
-            ArgUtil.NotNull(SourceEndpoint, nameof(SourceEndpoint));
-            ArgUtil.NotNull(SourceProvider, nameof(SourceProvider));
+        //     ArgUtil.NotNull(SourceEndpoint, nameof(SourceEndpoint));
+        //     ArgUtil.NotNull(SourceProvider, nameof(SourceProvider));
 
-            // Read skipSyncSource property fron endpoint data
-            string skipSyncSourceText;
-            bool skipSyncSource = false;
-            if (SourceEndpoint.Data.TryGetValue("skipSyncSource", out skipSyncSourceText))
-            {
-                skipSyncSource = StringUtil.ConvertToBoolean(skipSyncSourceText, false);
-            }
+        //     // Read skipSyncSource property fron endpoint data
+        //     string skipSyncSourceText;
+        //     bool skipSyncSource = false;
+        //     if (SourceEndpoint.Data.TryGetValue("skipSyncSource", out skipSyncSourceText))
+        //     {
+        //         skipSyncSource = StringUtil.ConvertToBoolean(skipSyncSourceText, false);
+        //     }
 
-            // Prefer feature variable over endpoint data
-            skipSyncSource = executionContext.Variables.GetBoolean(Constants.Variables.Features.SkipSyncSource) ?? skipSyncSource;
+        //     // Prefer feature variable over endpoint data
+        //     skipSyncSource = executionContext.Variables.GetBoolean(Constants.Variables.Features.SkipSyncSource) ?? skipSyncSource;
 
-            if (skipSyncSource)
-            {
-                executionContext.Output($"Skip sync source for endpoint: {SourceEndpoint.Name}");
-            }
-            else
-            {
-                executionContext.Debug($"Sync source for endpoint: {SourceEndpoint.Name}");
-                await SourceProvider.GetSourceAsync(executionContext, SourceEndpoint, executionContext.CancellationToken);
-            }
-        }
+        //     if (skipSyncSource)
+        //     {
+        //         executionContext.Output($"Skip sync source for endpoint: {SourceEndpoint.Name}");
+        //     }
+        //     else
+        //     {
+        //         executionContext.Debug($"Sync source for endpoint: {SourceEndpoint.Name}");
+        //         await SourceProvider.GetSourceAsync(executionContext, SourceEndpoint, executionContext.CancellationToken);
+        //     }
+        // }
 
-        private async Task PostJobCleanupAsync(IExecutionContext executionContext, object data)
-        {
-            // Validate args.
-            Trace.Entering();
+        // private async Task PostJobCleanupAsync(IExecutionContext executionContext, object data)
+        // {
+        //     // Validate args.
+        //     Trace.Entering();
 
-            // If syncSources = false, we will not reset repository.
-            bool syncSources = executionContext.Variables.Build_SyncSources ?? true;
-            if (!syncSources)
-            {
-                Trace.Verbose($"{Constants.Variables.Build.SyncSources} = false, we will not run post job cleanup for this repository");
-                return;
-            }
+        //     // If syncSources = false, we will not reset repository.
+        //     bool syncSources = executionContext.Variables.Build_SyncSources ?? true;
+        //     if (!syncSources)
+        //     {
+        //         Trace.Verbose($"{Constants.Variables.Build.SyncSources} = false, we will not run post job cleanup for this repository");
+        //         return;
+        //     }
 
-            ArgUtil.NotNull(SourceEndpoint, nameof(SourceEndpoint));
-            ArgUtil.NotNull(SourceProvider, nameof(SourceProvider));
+        //     ArgUtil.NotNull(SourceEndpoint, nameof(SourceEndpoint));
+        //     ArgUtil.NotNull(SourceProvider, nameof(SourceProvider));
 
-            // Read skipSyncSource property fron endpoint data
-            string skipSyncSourceText;
-            bool skipSyncSource = false;
-            if (SourceEndpoint != null && SourceEndpoint.Data.TryGetValue("skipSyncSource", out skipSyncSourceText))
-            {
-                skipSyncSource = StringUtil.ConvertToBoolean(skipSyncSourceText, false);
-            }
+        //     // Read skipSyncSource property fron endpoint data
+        //     string skipSyncSourceText;
+        //     bool skipSyncSource = false;
+        //     if (SourceEndpoint != null && SourceEndpoint.Data.TryGetValue("skipSyncSource", out skipSyncSourceText))
+        //     {
+        //         skipSyncSource = StringUtil.ConvertToBoolean(skipSyncSourceText, false);
+        //     }
 
-            // Prefer feature variable over endpoint data
-            skipSyncSource = executionContext.Variables.GetBoolean(Constants.Variables.Features.SkipSyncSource) ?? skipSyncSource;
+        //     // Prefer feature variable over endpoint data
+        //     skipSyncSource = executionContext.Variables.GetBoolean(Constants.Variables.Features.SkipSyncSource) ?? skipSyncSource;
 
-            if (skipSyncSource)
-            {
-                Trace.Verbose($"{Constants.Variables.Build.SyncSources} = false, we will not run post job cleanup for this repository");
-                return;
-            }
+        //     if (skipSyncSource)
+        //     {
+        //         Trace.Verbose($"{Constants.Variables.Build.SyncSources} = false, we will not run post job cleanup for this repository");
+        //         return;
+        //     }
 
-            await SourceProvider.PostJobCleanupAsync(executionContext, SourceEndpoint);
-        }
+        //     await SourceProvider.PostJobCleanupAsync(executionContext, SourceEndpoint);
+        // }
 
         private bool TrySetPrimaryEndpointAndProviderInfo(IExecutionContext executionContext)
         {
-            // Return the first service endpoint that contains a supported source provider.
+            // Return the first repository resource and its source provider.
             Trace.Entering();
             var extensionManager = HostContext.GetService<IExtensionManager>();
             List<ISourceProvider> sourceProviders = extensionManager.GetExtensions<ISourceProvider>();
-            foreach (ServiceEndpoint ep in executionContext.Endpoints.Where(e => e.Data.ContainsKey("repositoryId")))
+            Repository = executionContext.Repositories.SingleOrDefault();
+            if (Repository != null)
             {
-                SourceProvider = sourceProviders
-                    .FirstOrDefault(x => string.Equals(x.RepositoryType, ep.Type, StringComparison.OrdinalIgnoreCase));
+                SourceProvider = sourceProviders.FirstOrDefault(x => string.Equals(x.RepositoryType, Repository.Type, StringComparison.OrdinalIgnoreCase));
+
                 if (SourceProvider != null)
                 {
-                    SourceEndpoint = ep.Clone();
                     return true;
                 }
             }
