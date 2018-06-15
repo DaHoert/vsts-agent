@@ -17,8 +17,6 @@ namespace Agent.Plugins.Repository
 {
     public sealed class TfsVCSourceProvider : ISourceProvider
     {
-        private bool _undoShelvesetPendingChanges = false;
-
         public async Task GetSourceAsync(
             AgentTaskPluginExecutionContext executionContext,
             Pipelines.RepositoryResource repository,
@@ -49,7 +47,7 @@ namespace Agent.Plugins.Repository
             {
                 // the endpoint should either be the SystemVssConnection (id = guild.empty, name = SystemVssConnection)
                 // or a real service endpoint to external service which has a real id
-                var endpoint = executionContext.Endpoints.Single(x => (x.Id == Guid.Empty && x.Name == repository.Endpoint.Name) || (x.Id != Guid.Empty && x.Id == repository.Endpoint.Id));
+                var endpoint = executionContext.Endpoints.Single(x => (x.Id != Guid.Empty && x.Id == repository.Endpoint.Id) || (x.Id == Guid.Empty && x.Name == repository.Endpoint.Name));
                 ArgUtil.NotNull(endpoint, nameof(endpoint));
                 tf.Endpoint = endpoint;
             }
@@ -75,7 +73,7 @@ namespace Agent.Plugins.Repository
 
             // prepare client cert, if the repository's endpoint url match the TFS/VSTS url
             var systemConnection = executionContext.Endpoints.Single(x => string.Equals(x.Name, WellKnownServiceEndpointNames.SystemVssConnection, StringComparison.OrdinalIgnoreCase));
-            if (!string.IsNullOrEmpty(agentCertManager.ClientCertificateFile) &&
+            if (!string.IsNullOrEmpty(agentCertManager?.ClientCertificateFile) &&
                 Uri.Compare(repository.Url, systemConnection.Url, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) == 0)
             {
                 executionContext.Debug($"Configure '{tf.FilePath}' to work with client cert '{agentCertManager.ClientCertificateFile}'.");
@@ -377,7 +375,7 @@ namespace Agent.Plugins.Repository
                 await tf.UnshelveAsync(shelveset: shelvesetName);
 
                 // Ensure we undo pending changes for shelveset build at the end.
-                _undoShelvesetPendingChanges = true;
+                executionContext.SetTaskVariable("UndoShelvesetPendingChanges", bool.TrueString);
 
                 if (!string.IsNullOrEmpty(gatedShelvesetName))
                 {
@@ -425,7 +423,8 @@ namespace Agent.Plugins.Repository
 
         public async Task PostJobCleanupAsync(AgentTaskPluginExecutionContext executionContext, Pipelines.RepositoryResource repository)
         {
-            if (_undoShelvesetPendingChanges)
+            bool undoShelvesetPendingChanges = StringUtil.ConvertToBoolean(executionContext.TaskVariables.GetValueOrDefault("UndoShelvesetPendingChanges")?.Value);
+            if (undoShelvesetPendingChanges)
             {
                 string shelvesetName = executionContext.Variables.GetValueOrDefault("build.gated.shelvesetname", null)?.Value;
                 executionContext.Debug($"Undo pending changes left by shelveset '{shelvesetName}'.");
@@ -443,7 +442,7 @@ namespace Agent.Plugins.Repository
                 {
                     // the endpoint should either be the SystemVssConnection (id = guild.empty, name = SystemVssConnection)
                     // or a real service endpoint to external service which has a real id
-                    var endpoint = executionContext.Endpoints.Single(x => (x.Id == Guid.Empty && x.Name == repository.Endpoint.Name) || (x.Id != Guid.Empty && x.Id == repository.Endpoint.Id));
+                    var endpoint = executionContext.Endpoints.Single(x => (x.Id != Guid.Empty && x.Id == repository.Endpoint.Id) || (x.Id == Guid.Empty && x.Name == repository.Endpoint.Name));
                     ArgUtil.NotNull(endpoint, nameof(endpoint));
                     tf.Endpoint = endpoint;
                 }

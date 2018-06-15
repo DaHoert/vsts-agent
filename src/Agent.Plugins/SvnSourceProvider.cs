@@ -27,9 +27,9 @@ namespace Agent.Plugins.Repository
             svn.Init(executionContext, repository, cancellationToken);
 
             // Determine the sources directory.
-            string sourcesDirectory = repository.Properties.Get<string>("sourcedirecotry");
-            executionContext.Debug($"sourcesDirectory={sourcesDirectory}");
-            ArgUtil.NotNullOrEmpty(sourcesDirectory, nameof(sourcesDirectory));
+            string sourceDirectory = repository.Properties.Get<string>("sourcedirectory");
+            executionContext.Debug($"sourceDirectory={sourceDirectory}");
+            ArgUtil.NotNullOrEmpty(sourceDirectory, nameof(sourceDirectory));
 
             string sourceBranch = repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Ref);
             executionContext.Debug($"sourceBranch={sourceBranch}");
@@ -66,7 +66,7 @@ namespace Agent.Plugins.Repository
             executionContext.Output(StringUtil.Loc("SvnSyncingRepo", repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name)));
 
             string effectiveRevision = await svn.UpdateWorkspace(
-                sourcesDirectory,
+                sourceDirectory,
                 normalizedMappings,
                 clean,
                 normalizedBranch,

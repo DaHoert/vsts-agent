@@ -126,7 +126,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 throw new Exception(StringUtil.Loc("SupportedRepositoryEndpointNotFound"));
             }
 
-            executionContext.Debug($"Primary repository: {Repository.Alias}. repository type: {Repository.Type}");
+            executionContext.Debug($"Primary repository: {Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name)}. repository type: {Repository.Type}");
 
             // Set the repo variables.
             if (!string.IsNullOrEmpty(Repository.Id)) // TODO: Move to const after source artifacts PR is merged.

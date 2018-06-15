@@ -50,6 +50,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             executionContext.Debug($"clean={clean}");
 
             // Get the definition mappings.
+            executionContext.Debug(endpoint.Data[EndpointData.SvnWorkspaceMapping]);
             List<SvnMappingDetails> allMappings = JsonConvert.DeserializeObject<SvnWorkspace>
                 (endpoint.Data[EndpointData.SvnWorkspaceMapping]).Mappings;
 

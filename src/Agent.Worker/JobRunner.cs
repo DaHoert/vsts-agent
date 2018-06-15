@@ -207,6 +207,31 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     VarUtil.ExpandEnvironmentVariables(HostContext, target: endpoint.Data);
                 }
 
+                // Expand the repository workspace mapping property values.
+                foreach (var repository in jobContext.Repositories)
+                {
+                    var mappings = repository.Properties.Get<IList<Pipelines.WorkspaceMapping>>(Pipelines.RepositoryPropertyNames.Mappings);
+                    if (mappings != null)
+                    {
+                        foreach (var mapping in mappings)
+                        {
+                            Dictionary<string, string> data = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            data["serverPath"] = mapping.ServerPath;
+                            data["localPath"] = mapping.LocalPath;
+
+                            jobContext.Variables.ExpandValues(target: data);
+                            VarUtil.ExpandEnvironmentVariables(HostContext, target: data);
+
+                            mapping.ServerPath = data["serverPath"];
+                            mapping.LocalPath = data["localPath"];
+                            jobContext.Debug(mapping.ServerPath);
+                            jobContext.Debug(mapping.LocalPath);
+                        }
+
+                        repository.Properties.Set<IList<Pipelines.WorkspaceMapping>>(Pipelines.RepositoryPropertyNames.Mappings, mappings);
+                    }
+                }
+
                 // Get the job extension.
                 Trace.Info("Getting job extension.");
                 var hostType = jobContext.Variables.System_HostType;

@@ -988,6 +988,10 @@ namespace Agent.Plugins.Repository
                 // no needs to cleanup creds, since customer choose to manage creds themselves.
                 executionContext.SetTaskVariable("cleanupcreds", "false");
             }
+            else if (exposeCred)
+            {
+                executionContext.SetTaskVariable("cleanupcreds", "true");
+            }
 
             if (preferGitFromPath)
             {
